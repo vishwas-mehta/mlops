@@ -1,0 +1,64 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: adroit-metric-473508-k1
+  GKE_CLUSTER: iris-cluster
+  GKE_ZONE: us-central1
+  DEPLOYMENT_NAME: heart-disease-app
+  IMAGE_NAME: heart-disease-app
+  ARTIFACT_REGISTRY: us-central1-docker.pkg.dev
+  REPOSITORY: heart-disease-repo
+
+jobs:
+  setup-build-deploy:
+    name: Setup, Build, and Deploy
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+
+    - name: Configure Docker
+      run: |
+        gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY }}
+
+    - name: Build Docker Image
+      run: |
+        docker build -f deployment/Dockerfile -t ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+        docker tag ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                   ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+
+    - name: Push Docker Image
+      run: |
+        docker push ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        docker push ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+
+    - name: Get GKE Credentials
+      run: |
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }}
+
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} heart-disease-fastapi=${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }}
+
+    - name: Health Checks
+      run: |
+        sleep 20
+        EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        echo "Testing: http://${EXTERNAL_IP}/ready_check"
+        curl -f http://${EXTERNAL_IP}/ready_check || exit 1
+        echo "Deployment successful!"
