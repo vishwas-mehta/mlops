@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heart-disease-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: heart-disease-app
+  template:
+    metadata:
+      labels:
+        app: heart-disease-app
+    spec:
+      containers:
+      - name: heart-disease-fastapi
+        image: us-central1-docker.pkg.dev/adroit-metric-473508-k1/heart-disease-repo/heart-disease-app:latest
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "768Mi"
+            cpu: "300m"
+        livenessProbe:
+          httpGet:
+            path: /live_check
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready_check
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
