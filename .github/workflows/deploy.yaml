@@ -50,29 +50,59 @@ jobs:
 
     - name: Get GKE Credentials
       run: |
-        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }}
         export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }}
 
     - name: Deploy to Kubernetes
       run: |
         export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} heart-disease-fastapi=${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        
+        # Apply all Kubernetes manifests
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+        kubectl apply -f k8s/hpa.yaml
+        
+        # Update the deployment image to the new version
+        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+          heart-disease-fastapi=${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          --record
+        
+        # Wait for rollout to complete
         kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }}
 
     - name: Health Checks
       run: |
         export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-        sleep 20
+        echo "Waiting for LoadBalancer IP..."
+        sleep 30
+        
         EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "Testing: http://${EXTERNAL_IP}/ready_check"
+        echo "External IP: $EXTERNAL_IP"
+        
+        if [ -z "$EXTERNAL_IP" ]; then
+          echo "ERROR: LoadBalancer IP not assigned yet"
+          kubectl describe svc heart-disease-lb
+          exit 1
+        fi
+        
+        echo "Testing /ready_check endpoint..."
         curl -f http://${EXTERNAL_IP}/ready_check || exit 1
-        echo "Deployment successful!"
+        echo "✅ Health check passed!"
 
     - name: Deployment Summary
       if: success()
       run: |
         export USE_GKE_GCLOUD_AUTH_PLUGIN=True
         echo "🎉 Deployment successful!"
+        echo ""
+        echo "Deployment:"
         kubectl get deployment ${{ env.DEPLOYMENT_NAME }}
-        kubectl get pods
+        echo ""
+        echo "Pods:"
+        kubectl get pods -l app=${{ env.DEPLOYMENT_NAME }}
+        echo ""
+        echo "Service:"
         kubectl get svc heart-disease-lb
+        echo ""
+        EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        echo "🌐 API URL: http://${EXTERNAL_IP}"
