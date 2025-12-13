@@ -39,9 +39,10 @@ jobs:
 
     - name: Build Docker Image
       run: |
-        docker build -f deployment/Dockerfile -t ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
-        docker tag ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-                   ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+        docker build -f deployment/Dockerfile \
+          -t ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          -t ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest \
+          .
 
     - name: Push Docker Image
       run: |
@@ -50,59 +51,93 @@ jobs:
 
     - name: Get GKE Credentials
       run: |
-        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }}
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone=${{ env.GKE_ZONE }}
 
-    - name: Deploy to Kubernetes
+    - name: Deploy Kubernetes Manifests
+      env:
+        USE_GKE_GCLOUD_AUTH_PLUGIN: True
       run: |
-        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        echo "📦 Deploying Kubernetes resources..."
         
-        # Apply all Kubernetes manifests
+        # Check if files exist
+        ls -la k8s/
+        
+        # Apply manifests
         kubectl apply -f k8s/deployment.yaml
         kubectl apply -f k8s/service.yaml
         kubectl apply -f k8s/hpa.yaml
         
-        # Update the deployment image to the new version
-        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
-          heart-disease-fastapi=${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-          --record
-        
-        # Wait for rollout to complete
-        kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }}
+        echo "✅ Manifests applied"
 
-    - name: Health Checks
+    - name: Update Deployment Image
+      env:
+        USE_GKE_GCLOUD_AUTH_PLUGIN: True
       run: |
-        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-        echo "Waiting for LoadBalancer IP..."
-        sleep 30
+        echo "🔄 Updating deployment image..."
+        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+          heart-disease-fastapi=${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
         
-        EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "External IP: $EXTERNAL_IP"
+        echo "⏳ Waiting for rollout..."
+        kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} --timeout=5m
+
+    - name: Wait for Service
+      env:
+        USE_GKE_GCLOUD_AUTH_PLUGIN: True
+      run: |
+        echo "⏳ Waiting for LoadBalancer IP (up to 3 minutes)..."
+        for i in {1..36}; do
+          EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [ ! -z "$EXTERNAL_IP" ]; then
+            echo "✅ LoadBalancer IP assigned: $EXTERNAL_IP"
+            echo "EXTERNAL_IP=$EXTERNAL_IP" >> $GITHUB_ENV
+            break
+          fi
+          echo "Waiting... ($i/36)"
+          sleep 5
+        done
         
         if [ -z "$EXTERNAL_IP" ]; then
-          echo "ERROR: LoadBalancer IP not assigned yet"
+          echo "❌ LoadBalancer IP not assigned after 3 minutes"
           kubectl describe svc heart-disease-lb
           exit 1
         fi
+
+    - name: Health Check
+      env:
+        USE_GKE_GCLOUD_AUTH_PLUGIN: True
+      run: |
+        echo "🧪 Testing API at http://${{ env.EXTERNAL_IP }}/ready_check"
         
-        echo "Testing /ready_check endpoint..."
-        curl -f http://${EXTERNAL_IP}/ready_check || exit 1
-        echo "✅ Health check passed!"
+        # Retry health check up to 10 times
+        for i in {1..10}; do
+          if curl -f -s http://${{ env.EXTERNAL_IP }}/ready_check; then
+            echo "✅ Health check passed!"
+            exit 0
+          fi
+          echo "Attempt $i failed, retrying in 5s..."
+          sleep 5
+        done
+        
+        echo "❌ Health check failed after 10 attempts"
+        exit 1
 
     - name: Deployment Summary
       if: success()
+      env:
+        USE_GKE_GCLOUD_AUTH_PLUGIN: True
       run: |
-        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-        echo "🎉 Deployment successful!"
+        echo "🎉 DEPLOYMENT SUCCESSFUL!"
         echo ""
-        echo "Deployment:"
+        echo "📊 Deployment Status:"
         kubectl get deployment ${{ env.DEPLOYMENT_NAME }}
         echo ""
-        echo "Pods:"
+        echo "🔧 Pods:"
         kubectl get pods -l app=${{ env.DEPLOYMENT_NAME }}
         echo ""
-        echo "Service:"
+        echo "🌐 Service:"
         kubectl get svc heart-disease-lb
         echo ""
-        EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "🌐 API URL: http://${EXTERNAL_IP}"
+        echo "🔗 API URL: http://${{ env.EXTERNAL_IP }}"
+        echo ""
+        echo "Test command:"
+        echo "curl -X POST http://${{ env.EXTERNAL_IP }}/predict -H 'Content-Type: application/json' -d '{\"age\":55,\"sex\":1,\"cp\":0,\"trestbps\":130,\"chol\":256,\"fbs\":0,\"restecg\":1,\"thalach\":142,\"exang\":1,\"oldpeak\":0.6,\"slope\":1,\"ca\":1,\"thal\":6}'"

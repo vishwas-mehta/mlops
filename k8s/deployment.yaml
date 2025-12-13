@@ -20,19 +20,19 @@ spec:
         resources:
           requests:
             memory: "256Mi"
-            cpu: "100m"
+            cpu: "250m"
           limits:
-            memory: "768Mi"
-            cpu: "300m"
-        livenessProbe:
-          httpGet:
-            path: /live_check
-            port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 10
+            memory: "512Mi"
+            cpu: "500m"
         readinessProbe:
           httpGet:
             path: /ready_check
             port: 8000
-          initialDelaySeconds: 5
+          initialDelaySeconds: 15
           periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /ready_check
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 15
