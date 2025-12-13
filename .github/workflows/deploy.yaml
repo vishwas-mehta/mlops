@@ -30,6 +30,8 @@ jobs:
 
     - name: Set up Cloud SDK
       uses: google-github-actions/setup-gcloud@v1
+      with:
+        install_components: 'gke-gcloud-auth-plugin'
 
     - name: Configure Docker
       run: |
@@ -49,16 +51,28 @@ jobs:
     - name: Get GKE Credentials
       run: |
         gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }}
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
 
     - name: Deploy to Kubernetes
       run: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
         kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} heart-disease-fastapi=${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
         kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }}
 
     - name: Health Checks
       run: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
         sleep 20
         EXTERNAL_IP=$(kubectl get svc heart-disease-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
         echo "Testing: http://${EXTERNAL_IP}/ready_check"
         curl -f http://${EXTERNAL_IP}/ready_check || exit 1
         echo "Deployment successful!"
+
+    - name: Deployment Summary
+      if: success()
+      run: |
+        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+        echo "🎉 Deployment successful!"
+        kubectl get deployment ${{ env.DEPLOYMENT_NAME }}
+        kubectl get pods
+        kubectl get svc heart-disease-lb
