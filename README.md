@@ -12,6 +12,3 @@ Complete MLOps pipeline with:
 - ✅ Automated CI/CD with GitHub Actions
 - ✅ Kubernetes deployment on GKE
 - ✅ Load testing (66.86 req/sec)
-
-## 📊 Architecture
-
